@@ -78,6 +78,24 @@ func (m *MailHogReader) GetMessages() (*MessagesResult, error) {
 	return &messages, nil
 }
 
+func (m *MailHogReader) DeleteMessage(messageID data.MessageID) error {
+	req, reqErr := m.DeleteMessageRequest(messageID)
+	if reqErr != nil {
+		return reqErr
+	}
+	res, getErr := m.HttpClient.Do(req)
+	if getErr != nil {
+		return getErr
+	}
+	log.Println(res)
+	return nil
+}
+
+func (m *MailHogReader) DeleteMessageRequest(messageID data.MessageID) (*http.Request, error) {
+	url := fmt.Sprintf("%s/%s/%s/%s", m.BaseUrl(), "api/v1", "messages", messageID)
+	return http.NewRequest(http.MethodDelete, url, nil)
+}
+
 func (mr MessagesResult) FileNameFromDisposition(disposition []string) (filename string) {
 	if len(disposition) > 0 {
 		r := regexp.MustCompile(`(?m)^attachment;\s*filename="?([^"]+)"?$`)
@@ -164,7 +182,6 @@ func main() {
 	if dotEnvErr != nil {
 		log.Fatalln(dotEnvErr)
 	}
-	log.Println("hello")
 	var spec MessageRelayConfig
 	err := envconfig.Process(MessageRelayConfig{}.EnvPrefix(), &spec)
 
@@ -174,17 +191,26 @@ func main() {
 
 	mh := MailHogReader{}.NewReader(spec.Host, spec.Port)
 	log.Println("Calling: ", mh.BaseUrl())
-	messages, err := mh.GetMessages()
-	if err != nil {
-		log.Fatalln(err)
-	}
+
 	api := slack.New(spec.SlackToken)
 	channel, err := api.FindChannelByName(spec.SlackChannelName)
 	if err != nil {
 		log.Fatalln(err)
 	}
+
+	messages, err := mh.GetMessages()
+	if err != nil {
+		log.Fatalln(err)
+	}
+
+	deleteOnSlack := true // TODO: pass this in as a flag
+
+	if messages.Count == 0 {
+		log.Println("No messages to parse")
+		return
+	}
 	for msgNum, msg := range messages.Items {
-		log.Println("Message #", msgNum)
+		log.Println("Message # %s - %s", msgNum, msg.ID)
 		attaches, err := messages.GetAttachments(msg)
 		if err != nil {
 			log.Fatalln(err)
@@ -196,6 +222,13 @@ func main() {
 			}
 			log.Println(info.PrivateDownloadUrl)
 		}
-		log.Println("You can delete Message #", msgNum)
+		log.Println("You can delete MessageID ", msg.ID)
+		if deleteOnSlack {
+			delErr := mh.DeleteMessage(msg.ID)
+			if delErr != nil {
+				log.Fatalln(delErr)
+			}
+			log.Println("Deleted ", msg.ID)
+		}
 	}
 }
